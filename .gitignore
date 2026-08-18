@@ -1,0 +1,19 @@
+# 비밀 키가 든 설정 파일 — 절대 깃에 올리지 않는다
+.env
+host/.env
+*.env
+!host/config.example.env
+
+# 파이썬
+__pycache__/
+*.pyc
+.venv/
+
+# 빌드 결과물 / 임시 파일
+build/
+.cache/
+*.uf2
+*.hex
+*.elf
+*.map
+*.zip

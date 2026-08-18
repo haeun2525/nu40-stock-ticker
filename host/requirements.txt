@@ -1,0 +1,12 @@
+# NU40 DK 주식 티커 — 파이썬 라이브러리 목록
+#
+# 설치 방법 (터미널에서):
+#     pip3 install -r host/requirements.txt
+
+requests>=2.31          # 인터넷(HTTPS) 호출
+pyserial>=3.5           # USB 시리얼 통신 (보드와 대화)
+python-dotenv>=1.0      # .env 설정 파일 읽기
+
+# 맥 기본 파이썬(LibreSSL)에서는 urllib3 2.x 가 경고를 냅니다.
+# 안전하게 1.x 로 고정합니다.
+urllib3<2
