@@ -17,3 +17,8 @@ build/
 *.elf
 *.map
 *.zip
+
+# 디자인 결정용으로 뽑았던 비교 이미지 (결정 끝남).
+# tools/preview/hangul_preview.py, hangul_layouts.py 로 언제든 다시 만들 수 있다.
+tools/preview/H[0-9]*.png
+tools/preview/L[0-9]*.png

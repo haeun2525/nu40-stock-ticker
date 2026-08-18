@@ -18,6 +18,9 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
+// 한글 글꼴 데이터. tools/make_hangul_font.py 가 만든다.
+#include "hangul_font.h"
+
 // ─────────────────────────────────────────────────────────────
 // 하드웨어 설정 (회로도로 확정된 값 — 바꾸지 말 것)
 // ─────────────────────────────────────────────────────────────
@@ -52,11 +55,12 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 //   y 28~57 : 미니 차트
 //   y 58~63 : 슬롯 인디케이터(지금 보는 슬롯만 꽉 채움)
 // ─────────────────────────────────────────────────────────────
-static const int16_t HEADER_Y      = 2;    // 종목명/등락률 글자 윗줄 위치
-static const int16_t PRICE_Y       = 12;   // 현재가 글자 윗줄 위치
-static const int16_t CHART_TOP     = 28;   // 차트 영역 맨 위
+static const int16_t HEADER_Y      = 1;    // 종목명(한글 9픽셀) 윗줄 위치
+static const int16_t CHG_Y         = 2;    // 등락률 윗줄 위치. 영문 글꼴이 2픽셀 작아서 맞춰 내린다.
+static const int16_t PRICE_Y       = 13;   // 현재가 글자 윗줄 위치
+static const int16_t CHART_TOP     = 31;   // 차트 영역 맨 위
 static const int16_t CHART_BOTTOM  = 57;   // 차트 영역 맨 아래
-static const int16_t CHART_HEIGHT  = CHART_BOTTOM - CHART_TOP;  // = 30 픽셀
+static const int16_t CHART_HEIGHT  = CHART_BOTTOM - CHART_TOP;  // = 26 픽셀
 static const int16_t INDICATOR_Y   = 58;   // 슬롯 인디케이터 윗줄 위치
 
 // ─────────────────────────────────────────────────────────────
@@ -67,7 +71,8 @@ static const uint8_t CHART_POINTS = 64;   // 차트 점 개수 (PC가 64개를 �
 static const uint8_t CHART_MAX    = 36;   // 차트 값의 최대치. PC는 0~36 정수로 정규화해서 보낸다.
 
 struct Slot {
-  char    name[11];               // 화면에 띄울 짧은 이름 (최대 10자 + 문자열 끝표시 1)
+  char    name[32];               // 화면에 띄울 짧은 이름.
+                                  // 한글은 한 글자가 3바이트(UTF-8)라 넉넉히 잡는다.
   char    price[16];              // 현재가 문자열 (예: "68,900")
   char    chg[12];                // 등락률 문자열 (예: "-2.96%")
   uint8_t alert;                  // 1이면 임계가 아래 → LED 점등
@@ -324,6 +329,98 @@ void readButtons() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// 한글 그리기
+//
+// 아두이노 기본 글꼴에는 한글이 없어서, 글자 모양을 직접 비트맵으로 넣어뒀다.
+// (hangul_font.h — 갈무리9 픽셀 글꼴, 9x9 픽셀, 글자 간격 10픽셀)
+// 영문·숫자는 기본 글꼴을 그대로 쓰고, 한글만 이 비트맵으로 그린다.
+// ─────────────────────────────────────────────────────────────
+
+// UTF-8로 적힌 글에서 글자 하나를 읽어 유니코드 번호로 바꾼다.
+// 몇 바이트를 읽었는지는 used 에 담아 돌려준다.
+// (UTF-8은 한 글자가 1~3바이트다. 영문은 1바이트, 한글은 3바이트.)
+uint32_t utf8Next(const char* s, uint8_t* used) {
+  uint8_t c = (uint8_t)s[0];
+  if (c < 0x80) {                       // 영문·숫자
+    *used = 1;
+    return c;
+  }
+  if ((c & 0xE0) == 0xC0) {             // 2바이트 글자
+    *used = 2;
+    return ((uint32_t)(c & 0x1F) << 6) | (s[1] & 0x3F);
+  }
+  if ((c & 0xF0) == 0xE0) {             // 3바이트 글자 (한글이 여기)
+    *used = 3;
+    return ((uint32_t)(c & 0x0F) << 12) | ((uint32_t)(s[1] & 0x3F) << 6) | (s[2] & 0x3F);
+  }
+  *used = 1;                            // 다룰 수 없는 글자는 한 바이트 건너뛴다
+  return 0;
+}
+
+// 글자 번호로 글꼴 목록에서 몇 번째 글자인지 찾는다. 없으면 -1.
+// 목록이 작은 번호부터 정렬돼 있어서 반씩 잘라가며 찾는다(이진 탐색). 2350자를 12번 안에 찾는다.
+int16_t hangulIndex(uint32_t code) {
+  if (code < 0xAC00 || code > 0xD7A3) return -1;   // 한글 음절 범위가 아니다
+
+  int16_t low = 0;
+  int16_t high = HANGUL_COUNT - 1;
+  while (low <= high) {
+    int16_t mid = (low + high) / 2;
+    uint16_t here = HANGUL_CODES[mid];
+    if (here == code) return mid;
+    if (here < code) low = mid + 1;
+    else             high = mid - 1;
+  }
+  return -1;
+}
+
+// 한글 한 글자를 그린다. (x, y)는 글자의 왼쪽 위.
+void drawHangulGlyph(int16_t x, int16_t y, int16_t index) {
+  const uint8_t* glyph = HANGUL_BITS[index];
+  for (uint8_t row = 0; row < HANGUL_H; row++) {
+    uint8_t left = glyph[row * 2];        // 왼쪽 8칸
+    uint8_t last = glyph[row * 2 + 1];    // 9번째 칸은 이 바이트의 맨 앞 비트
+    for (uint8_t col = 0; col < 8; col++) {
+      if (left & (0x80 >> col)) display.drawPixel(x + col, y + row, SSD1306_WHITE);
+    }
+    if (last & 0x80) display.drawPixel(x + 8, y + row, SSD1306_WHITE);
+  }
+}
+
+// 한글과 영문이 섞인 글을 그린다. y는 글자 윗줄 위치.
+void drawMixedText(int16_t x, int16_t y, const char* text) {
+  display.setTextSize(1);
+  while (*text != '\0') {
+    uint8_t used;
+    uint32_t code = utf8Next(text, &used);
+    int16_t index = hangulIndex(code);
+
+    if (index >= 0) {
+      drawHangulGlyph(x, y, index);
+      x += HANGUL_ADVANCE;
+    } else if (code >= 0x20 && code < 0x80) {
+      // 영문·숫자는 기본 글꼴(5x7)로. 한글보다 2픽셀 작아서 아래로 1픽셀 내려 눈높이를 맞춘다.
+      display.drawChar(x, y + 1, (char)code, SSD1306_WHITE, SSD1306_BLACK, 1);
+      x += 6;
+    }
+    text += used;
+  }
+}
+
+// 그렸을 때 가로로 몇 픽셀을 차지하는지 미리 잰다. 오른쪽 정렬에 쓴다.
+int16_t measureMixedText(const char* text) {
+  int16_t width = 0;
+  while (*text != '\0') {
+    uint8_t used;
+    uint32_t code = utf8Next(text, &used);
+    if (hangulIndex(code) >= 0)            width += HANGUL_ADVANCE;
+    else if (code >= 0x20 && code < 0x80)  width += 6;
+    text += used;
+  }
+  return width;
+}
+
+// ─────────────────────────────────────────────────────────────
 // 화면 그리기
 // ─────────────────────────────────────────────────────────────
 void drawScreen() {
@@ -333,32 +430,25 @@ void drawScreen() {
 
   if (!s.hasData) {
     // 아직 PC에서 값을 못 받은 슬롯.
-    // 기본 글꼴에는 한글이 없어서 "대기중..."을 그리면 글자가 깨진다. 영문으로 표시한다.
+    drawMixedText(0, HEADER_Y, "대기중");
     display.setTextSize(1);
-    display.setCursor(0, HEADER_Y);
+    display.setCursor(0, PRICE_Y + 4);
     display.print("SLOT ");
     display.print(currentSlot + 1);
-    display.setTextSize(2);
-    display.setCursor(0, PRICE_Y);
-    display.print("WAITING");
-    display.setTextSize(1);
-    display.setCursor(0, CHART_TOP + 8);
-    display.print("PC data...");
     drawIndicator();
     display.display();
     return;
   }
 
-  // 1) 종목명 (왼쪽)
-  display.setTextSize(1);
-  display.setCursor(0, HEADER_Y);
-  display.print(s.name);
+  // 1) 종목명 (왼쪽). 한글·영문이 섞여 있어도 된다.
+  drawMixedText(0, HEADER_Y, s.name);
 
-  // 2) 등락률 (오른쪽 정렬). size 1 글자 하나는 가로 6픽셀이다.
+  // 2) 등락률 (오른쪽 정렬). 숫자와 기호뿐이라 기본 글꼴이 더 또렷하다.
   int16_t chgWidth = (int16_t)strlen(s.chg) * 6;
   int16_t chgX     = SCREEN_WIDTH - chgWidth;
   if (chgX < 0) chgX = 0;
-  display.setCursor(chgX, HEADER_Y);
+  display.setTextSize(1);
+  display.setCursor(chgX, CHG_Y);
   display.print(s.chg);
 
   // 3) 현재가 (큰 글씨)

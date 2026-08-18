@@ -47,10 +47,10 @@ CHART_MAX = 36         # 차트 값의 최대치 (규약상 0~36 정수)
 # 없으면 아래 기본값을 쓴다. (설정을 두 군데 고치지 않아도 되게 하려는 것)
 #   형식: (표시이름, 시작가, 임계가, 소수점자리, 콤마표시)
 DEFAULT_SLOTS = [
-    ("Samsung", 270000.0, 268300.0, 0, True),
-    ("SKhynix", 1679000.0, 1668200.0, 0, True),
-    ("NAVER", 218000.0, 215300.0, 0, True),
-    ("Kakao", 38250.0, 37900.0, 0, True),
+    ("삼성전자", 270000.0, 268300.0, 0, True),
+    ("SK하이닉스", 1679000.0, 1668200.0, 0, True),
+    ("네이버", 218000.0, 215300.0, 0, True),
+    ("카카오", 38250.0, 37900.0, 0, True),
 ]
 
 HANGUL = re.compile(r"[가-힣]")
@@ -87,8 +87,16 @@ def load_slots_from_env():
             except ValueError:
                 return None
 
-            # 화면 이름 규칙은 펌웨어·bridge.py 와 같다: 한글이면 종목코드를 쓴다.
-            name = (symbol if HANGUL.search(display) else display)[:10]
+            # 화면 이름 규칙은 bridge.py 와 같다. 한글도 그대로 쓰되,
+            # 등락률 자리를 남기려고 가로 80픽셀까지만 쓴다.
+            name, width = "", 0
+            for ch in display:
+                w = 10 if "\uac00" <= ch <= "\ud7a3" else 6
+                if width + w > 80:
+                    break
+                name += ch
+                width += w
+            name = name or symbol
 
             # 국내 종목(6자리 숫자)은 원화, 나머지는 달러로 본다.
             국내 = symbol.isdigit() and len(symbol) == 6
@@ -281,7 +289,7 @@ def main():
                 lines.append((name, price, chg_pct, price < threshold, line))
 
             for name, price, chg_pct, alert, line in lines:
-                ser.write((line + "\n").encode("ascii", errors="replace"))
+                ser.write((line + "\n").encode("utf-8"))   # 한글이 들어갈 수 있다
             ser.flush()
 
             tick += 1

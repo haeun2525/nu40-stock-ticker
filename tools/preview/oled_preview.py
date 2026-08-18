@@ -3,40 +3,49 @@
 oled_preview.py — 보드에 굽기 전에 OLED 화면을 PC에서 미리 보는 도구
 
 펌웨어의 drawScreen() 을 파이썬으로 똑같이 흉내 냅니다.
-글꼴도 아두이노에 실제로 설치된 Adafruit GFX 기본 글꼴(glcdfont.c)을 그대로 읽어 씁니다.
+글꼴도 실제로 쓰는 것을 그대로 읽어옵니다.
+  - 영문·숫자 : 아두이노에 설치된 Adafruit GFX 기본 글꼴 (glcdfont.c)
+  - 한글       : 갈무리9 픽셀 글꼴 (펌웨어에 심은 것과 같은 글꼴)
 그래서 여기 보이는 그림이 실제 화면과 픽셀 단위로 같습니다.
 
 실행:  python3 tools/preview/oled_preview.py
 결과:  tools/preview/*.png  (자동으로 열립니다)
 """
 
+import math
 import re
-import zlib
 import struct
 import subprocess
+import zlib
 from pathlib import Path
 
-# ── 펌웨어와 똑같은 상수 ──────────────────────────────────
+# ── 펌웨어와 똑같은 상수 (L1 배치) ────────────────────────
 W, H = 128, 64
-HEADER_Y = 2
-PRICE_Y = 12
-CHART_TOP = 28
+HEADER_Y = 1        # 종목명(한글 9픽셀) 윗줄
+CHG_Y = 2           # 등락률 윗줄. 영문 글꼴이 2픽셀 작아서 맞춰 내린다.
+PRICE_Y = 13        # 현재가(큰 글씨) 윗줄
+CHART_TOP = 31
 CHART_BOTTOM = 57
-CHART_HEIGHT = CHART_BOTTOM - CHART_TOP     # 30
+CHART_HEIGHT = CHART_BOTTOM - CHART_TOP     # 26
 INDICATOR_Y = 58
 CHART_POINTS = 64
 CHART_MAX = 36
 
-FONT_PATHS = [
+HANGUL_ADVANCE = 10     # 한글 글자 간격
+ASCII_ADVANCE = 6       # 영문·숫자 글자 간격
+
+GFX_FONT_PATHS = [
     Path.home() / "Documents/Arduino/libraries/Adafruit_GFX_Library/glcdfont.c",
     Path.home() / "Library/Arduino15/libraries/TFT/src/utility/glcdfont.c",
 ]
+GALMURI_PATH = Path.home() / "Library/Fonts/Galmuri9Bitmap-Regular-2.40.3.ttf"
+GALMURI_EM = 12         # 이 글꼴은 크기 12에서만 열린다. 실제 글자 높이는 9픽셀.
 
 
-def load_font():
+def load_gfx_font():
     """아두이노에 설치된 Adafruit GFX 기본 글꼴(5x7)을 읽는다.
     256글자 × 5바이트, 세로 한 줄이 1바이트(맨 아래 비트가 맨 위 픽셀)."""
-    for p in FONT_PATHS:
+    for p in GFX_FONT_PATHS:
         if p.exists():
             text = p.read_text(errors="replace")
             body = text[text.index("{"): text.rindex("}")]
@@ -46,7 +55,31 @@ def load_font():
     raise SystemExit("[오류] Adafruit GFX 글꼴 파일(glcdfont.c)을 찾지 못했습니다.")
 
 
-FONT = load_font()
+FONT = load_gfx_font()
+_hangul_cache = {}
+
+
+def hangul_dots(ch):
+    """한글 한 글자를 '켜진 픽셀 좌표' 목록으로 바꾼다. (9x9 안쪽)"""
+    if ch in _hangul_cache:
+        return _hangul_cache[ch]
+    from PIL import Image, ImageDraw, ImageFont
+    font = ImageFont.truetype(str(GALMURI_PATH), GALMURI_EM)
+    img = Image.new("1", (48, 48), 0)
+    ImageDraw.Draw(img).text((12, 12), ch, font=font, fill=1)
+    box = img.getbbox()
+    dots = []
+    if box:
+        crop = img.crop(box)
+        pix = crop.load()
+        w, h = crop.size
+        dots = [(x, y) for y in range(min(h, 9)) for x in range(min(w, 9)) if pix[x, y]]
+    _hangul_cache[ch] = dots
+    return dots
+
+
+def is_hangul(ch):
+    return "가" <= ch <= "힣"
 
 
 # ── 아주 작은 그리기 엔진 (Adafruit_GFX 와 동일한 규칙) ──
@@ -71,8 +104,21 @@ class Canvas:
                             self.pixel(x + col * size + dx, y + row * size + dy)
 
     def text(self, x, y, s, size=1):
+        """영문·숫자만. 기본 글꼴로 그린다."""
         for i, ch in enumerate(s):
-            self.draw_char(x + i * 6 * size, y, ch, size)   # 글자 간격은 6픽셀
+            self.draw_char(x + i * ASCII_ADVANCE * size, y, ch, size)
+
+    def mixed_text(self, x, y, s):
+        """한글과 영문이 섞인 글. 펌웨어의 drawMixedText() 와 같은 규칙."""
+        for ch in s:
+            if is_hangul(ch):
+                for dx, dy in hangul_dots(ch):
+                    self.pixel(x + dx, y + dy)
+                x += HANGUL_ADVANCE
+            else:
+                self.draw_char(x, y + 1, ch, 1)    # 영문은 1픽셀 내려 눈높이를 맞춘다
+                x += ASCII_ADVANCE
+        return x
 
     def line(self, x0, y0, x1, y1):
         """Adafruit_GFX 의 drawLine 과 같은 브레젠험 직선."""
@@ -104,6 +150,11 @@ class Canvas:
                 self.pixel(x, yy); self.pixel(x + w - 1, yy)
 
 
+def measure(text):
+    """그렸을 때 가로로 몇 픽셀을 차지하는지. 오른쪽 정렬에 쓴다."""
+    return sum(HANGUL_ADVANCE if is_hangul(c) else ASCII_ADVANCE for c in text)
+
+
 # ── 펌웨어의 drawScreen() 을 그대로 옮긴 부분 ─────────────
 def chart_value_to_y(v):
     v = min(v, CHART_MAX)
@@ -114,20 +165,18 @@ def draw_screen(name, price, chg, chart, current_slot, has_data=True):
     c = Canvas()
 
     if not has_data:
-        c.text(0, HEADER_Y, f"SLOT {current_slot + 1}", 1)
-        c.text(0, PRICE_Y, "WAITING", 2)
-        c.text(0, CHART_TOP + 8, "PC data...", 1)
+        c.mixed_text(0, HEADER_Y, "대기중")
+        c.text(0, PRICE_Y + 4, f"SLOT {current_slot + 1}", 1)
     else:
-        c.text(0, HEADER_Y, name, 1)                       # 종목명 (왼쪽)
-        chg_x = max(0, W - len(chg) * 6)                   # 등락률 (오른쪽 정렬)
-        c.text(chg_x, HEADER_Y, chg, 1)
+        c.mixed_text(0, HEADER_Y, name)                    # 종목명 (왼쪽, 한글 가능)
+        c.text(max(0, W - len(chg) * 6), CHG_Y, chg, 1)    # 등락률 (오른쪽 정렬)
         c.text(0, PRICE_Y, price, 2)                       # 현재가 (큰 글씨)
 
-        prev_x, prev_y = 0, chart_value_to_y(chart[0])     # 차트: 점을 선으로 연결
+        prev = (0, chart_value_to_y(chart[0]))             # 차트: 점을 선으로 연결
         for i in range(1, CHART_POINTS):
-            x, y = i * 2, chart_value_to_y(chart[i])
-            c.line(prev_x, prev_y, x, y)
-            prev_x, prev_y = x, y
+            cur = (i * 2, chart_value_to_y(chart[i]))
+            c.line(prev[0], prev[1], cur[0], cur[1])
+            prev = cur
 
     for i in range(4):                                      # 슬롯 인디케이터
         c.rect(i * 10, INDICATOR_Y, 6, 5, fill=(i == current_slot))
@@ -142,10 +191,8 @@ def save_png(canvas, path, scale=6):
     for y in range(H):
         row = bytearray([0])          # PNG 각 줄 앞에 붙는 필터 바이트
         for x in range(W):
-            color = on if canvas.px[y][x] else off
-            row += bytes(color) * scale
-        rows.append(bytes(row) * 1)
-        for _ in range(scale - 1):    # 세로로도 확대
+            row += bytes(on if canvas.px[y][x] else off) * scale
+        for _ in range(scale):        # 세로로도 확대
             rows.append(bytes(row))
     raw = b"".join(rows)
 
@@ -162,7 +209,6 @@ def save_png(canvas, path, scale=6):
 
 def make_chart(shape):
     """미리보기용 차트 값 64개를 만든다 (0~36)."""
-    import math
     out = []
     for i in range(CHART_POINTS):
         t = i / (CHART_POINTS - 1)
@@ -179,20 +225,21 @@ def make_chart(shape):
 if __name__ == "__main__":
     outdir = Path(__file__).resolve().parent
     cases = [
-        ("1_국내종목.png",   dict(name="005930", price="68,900", chg="-2.96%",
+        ("1_삼성전자.png",   dict(name="삼성전자", price="268,500", chg="-2.19%",
                                 chart=make_chart("down"), current_slot=0)),
-        ("2_미국종목.png",   dict(name="TSLA", price="398.20", chg="+1.24%",
-                                chart=make_chart("up"), current_slot=2)),
+        ("2_SK하이닉스.png", dict(name="SK하이닉스", price="1,656,000", chg="-0.66%",
+                                chart=make_chart("flat"), current_slot=1)),
         ("3_대기중.png",     dict(name="", price="", chg="", chart=make_chart("flat"),
                                 current_slot=0, has_data=False)),
-        ("4_긴가격.png",     dict(name="000660", price="170,500", chg="+12.50%",
-                                chart=make_chart("flat"), current_slot=1)),
+        ("4_최악조합.png",   dict(name="삼성바이오로직스", price="1,527,000", chg="-100.00%",
+                                chart=make_chart("up"), current_slot=3)),
     ]
     made = []
     for filename, kwargs in cases:
         save_png(draw_screen(**kwargs), outdir / filename)
         made.append(outdir / filename)
-        print(f"만들었습니다: {filename}")
+        name = kwargs.get("name") or "(대기중)"
+        print(f"만들었습니다: {filename}   이름 폭 {measure(name)}px + 등락률 {len(kwargs['chg'])*6}px")
 
     subprocess.run(["open"] + [str(p) for p in made], check=False)
     print("\n미리보기 창을 열었습니다. (실제 화면과 픽셀 단위로 동일합니다)")

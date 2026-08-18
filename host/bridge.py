@@ -64,7 +64,7 @@ SESSION_CACHE_SEC = 1800     # 장 운영 시간을 다시 물어보는 주기 (
 BASE_REFRESH_SEC = 600       # 등락률 기준(전일 종가)을 다시 받아오는 주기. 하루에 한 번 바뀌지만 넉넉히 10분.
 HTTP_TIMEOUT = 10            # 인터넷 호출을 몇 초까지 기다릴지
 
-HANGUL = re.compile(r"[가-힣]")   # 한글이 섞였는지 검사용
+HANGUL = re.compile(r"[가-힣]")   # 한글이 섞였는지 검사용 (글자 폭 계산에 쓴다)
 
 
 def parse_timestamp(text):
@@ -104,11 +104,21 @@ class SlotConfig:
 
     @property
     def screen_name(self):
-        """OLED에 띄울 이름.
-        기본 글꼴에는 한글이 없어서 한글 이름을 그리면 글자가 깨진다.
-        그래서 이름에 한글이 섞이면 종목코드를 대신 쓴다. 최대 10자."""
-        name = self.symbol if HANGUL.search(self.display_name) else self.display_name
-        return name[:10]
+        """OLED에 띄울 이름. 한글도 그대로 쓴다.
+        (펌웨어에 한글 글꼴 2350자를 넣어뒀다 — tools/make_hangul_font.py)
+
+        다만 같은 줄 오른쪽에 등락률이 들어가야 해서 가로 폭에 한계가 있다.
+        화면이 128픽셀인데 등락률이 약 48픽셀을 쓰므로, 이름은 80픽셀까지만 쓴다.
+        한글 한 글자는 10픽셀, 영문·숫자는 6픽셀이다."""
+        limit = 80
+        out, width = "", 0
+        for ch in self.display_name:
+            w = 10 if "\uac00" <= ch <= "\ud7a3" else 6
+            if width + w > limit:
+                break
+            out += ch
+            width += w
+        return out or self.symbol
 
 
 def load_config():
@@ -528,7 +538,8 @@ class BoardLink:
 
     def send(self, line):
         try:
-            self.ser.write((line + "\n").encode("ascii", errors="replace"))
+            # 한글이 들어갈 수 있으므로 UTF-8로 보낸다. 펌웨어가 UTF-8을 해석한다.
+            self.ser.write((line + "\n").encode("utf-8"))
             self.ser.flush()
             return True
         except Exception:

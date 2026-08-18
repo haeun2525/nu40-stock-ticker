@@ -29,7 +29,7 @@ def frame(series, live, label):
     s = list(series) + [live]
     chart = B.normalize_chart(B.downsample(s))
     chg = (live - base) / base * 100
-    return P.draw_screen("005930", f"{live:,.0f}", f"{chg:+.2f}%", chart, 0), chart
+    return P.draw_screen("삼성전자", f"{live:,.0f}", f"{chg:+.2f}%", chart, 0), chart
 
 live1 = day[-1]
 live2 = day[-1] - 120      # 5초 뒤 120원 하락했다고 가정
