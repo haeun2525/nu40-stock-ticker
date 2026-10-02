@@ -490,20 +490,15 @@ Fault-Count: 3            ← 스케치가 3번 죽었다는 뜻
 Sketch-Armed: No
 ```
 
-### `i2c_scan` 에 `0x6A` 만 보입니다
+### `i2c_scan` 에 `Nothing found.` 만 나옵니다
 
-**OLED가 아직 안 꽂혔거나 잘못 꽂힌 것입니다.** `0x6A`는 보드에 내장된
-자이로·가속도 센서 주소라 OLED와 무관하게 항상 보입니다.
-
-거꾸로 이건 좋은 신호이기도 합니다. **`0x6A`가 보인다는 건 I2C 배선(P0.26/P0.27) 자체는
-정상이라는 뜻**이므로, 문제는 OLED 쪽에만 있습니다.
-
-정상이면 이렇게 **두 개**가 나옵니다:
+NU40 DK 보드에는 I2C 부품이 따로 붙어 있지 않습니다. 그래서 **OLED가 안 꽂혔거나 잘못 꽂혔으면
+아무 주소도 안 나옵니다.** OLED를 제대로 꽂으면 이렇게 **하나만** 나옵니다:
 ```
-  Found: 0x3C      ← OLED
-  Found: 0x6A      ← 보드 내장 센서
-  Found 2 device(s). ...
+  Found: 0x3C
+  Found 1 device(s). If you see 0x3C or 0x3D, the OLED is OK.
 ```
+안 나오면 위 **화면이 안 켜집니다** 표대로 SDA·SCL 바꿔 꽂기 → VCC(VMOD)·GND 확인 → 점퍼선 교체 순서로 봅니다.
 
 ### `i2c_scan` 이 아무것도 출력하지 않고 멈춥니다
 
