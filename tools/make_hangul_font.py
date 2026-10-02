@@ -83,20 +83,20 @@ def pack(rows):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="한글 글꼴 데이터를 만듭니다.")
+    ap = argparse.ArgumentParser(description="Generate the Hangul (Korean) font data for the firmware.")
     ap.add_argument("--full", action="store_true",
-                    help="현대 한글 11172자 전부 넣기 (기본은 KS X 1001 2350자)")
+                    help="include all 11,172 modern Hangul syllables (default: the 2,350 KS X 1001 set)")
     ap.add_argument("--out", default="firmware/nu40_ticker/hangul_font.h")
     args = ap.parse_args()
 
     if not FONT_PATH.exists():
-        raise SystemExit(f"[오류] 글꼴 파일이 없습니다: {FONT_PATH}")
+        raise SystemExit(f"[Error] Font file not found: {FONT_PATH}")
 
     codes = all_syllables() if args.full else ks_x_1001_syllables()
     font = ImageFont.truetype(str(FONT_PATH), FONT_EM)
     img = Image.new("1", (8, 8), 0)
 
-    print(f"글자 수: {len(codes)}자")
+    print(f"Characters: {len(codes)}")
     packed, blank = [], 0
     for cp in codes:
         rows = render_glyph(img, font, chr(cp))
@@ -104,7 +104,7 @@ def main():
             blank += 1
         packed.append(pack(rows))
     if blank:
-        print(f"  (모양이 비어 있는 글자 {blank}개 — 글꼴에 없는 글자입니다)")
+        print(f"  ({blank} blank glyphs — characters the font does not have)")
 
     total = len(codes) * 2 + len(codes) * ROW_BYTES * GLYPH_H
     lines = []
@@ -140,8 +140,8 @@ def main():
 
     out = Path(args.out)
     out.write_text("\n".join(lines))
-    print(f"만들었습니다: {out}")
-    print(f"  파일 크기 {out.stat().st_size / 1024:.0f}KB, 보드에서 차지할 용량 약 {total / 1024:.0f}KB")
+    print(f"Wrote: {out}")
+    print(f"  File size {out.stat().st_size / 1024:.0f}KB, about {total / 1024:.0f}KB on the board")
 
 
 if __name__ == "__main__":

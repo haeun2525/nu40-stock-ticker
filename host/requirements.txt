@@ -1,12 +1,12 @@
-# NU40 DK 주식 티커 — 파이썬 라이브러리 목록
+# NU40 DK stock ticker — Python libraries
 #
-# 설치 방법 (터미널에서):
+# Install (in Terminal):
 #     pip3 install -r host/requirements.txt
 
-requests>=2.31          # 인터넷(HTTPS) 호출
-pyserial>=3.5           # USB 시리얼 통신 (보드와 대화)
-python-dotenv>=1.0      # .env 설정 파일 읽기
+requests>=2.31          # internet (HTTPS) calls
+pyserial>=3.5           # USB serial (talks to the board)
+python-dotenv>=1.0      # reads the .env settings file
 
-# 맥 기본 파이썬(LibreSSL)에서는 urllib3 2.x 가 경고를 냅니다.
-# 안전하게 1.x 로 고정합니다.
+# macOS's built-in Python (LibreSSL) makes urllib3 2.x print warnings.
+# Pin to 1.x to be safe.
 urllib3<2

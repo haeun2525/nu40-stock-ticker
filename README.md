@@ -1,3 +1,23 @@
+# NU40 DK + OLED Live Stock Ticker
+
+> **English quick start** (한국어 설명은 아래에 있습니다)
+>
+> Shows a stock's price, % change and a mini chart on a 0.96" SSD1306 OLED (128×64, I2C) connected to an NU40 DK.
+> Buttons S1–S4 switch between 4 stocks; a slot's LED turns on when its price drops below your alert level.
+> The board has no Wi-Fi, so a Python program on your computer fetches prices and sends them over USB serial.
+>
+> 1. Wire the OLED: GND → GND, SDA → P0.26, SCL → P0.27, VCC → VMOD (3.3 V).
+> 2. Install **Adafruit SSD1306** (+ dependencies) in Arduino IDE, open `firmware/nu40_ticker/nu40_ticker.ino`, and upload (board: NU40DK nRF52840).
+>    The OLED shows `WAITING` / `SLOT 1` until data arrives.
+> 3. `python3 -m venv .venv && .venv/bin/pip install -r host/requirements.txt`
+> 4. Test with simulated prices (no account needed): `.venv/bin/python tools/mock_feed.py` (add `--alert-after 15` to test the LEDs).
+> 5. Optional: `cp host/config.example.env host/.env`, set the four `SLOTn=symbol,name,alert level` lines (English or Korean names both work).
+> 6. Live prices: `.venv/bin/python host/bridge.py` uses the **Toss Securities Open API** (Korean brokerage account, API key and allowed IP required).
+>
+> Scanner for wiring problems: `tools/i2c_scan/i2c_scan.ino` (expect `Found: 0x3C`). Close Arduino IDE's Serial Monitor before running the Python tools.
+
+---
+
 # NU40 DK + OLED 실시간 주식 티커
 
 토스증권 오픈 API에서 주가를 가져와, USB로 연결된 **NU40 DK 보드의 0.96인치 OLED**에
@@ -86,13 +106,13 @@ nRF52840은 I2C 핀을 소프트웨어로 정합니다. 보통은 `Wire.setPins(
 
 **정상이면 이렇게 나옵니다:**
 ```
-=== NU40 DK I2C 주소 검사 ===
-SDA 핀: P0.26
-SCL 핀: P0.27
+=== NU40 DK I2C address scan ===
+SDA pin: P0.26
+SCL pin: P0.27
 
-검사 중... (0x01 ~ 0x7E)
-  찾음: 0x3C
-  총 1개 찾았습니다. 0x3C 또는 0x3D 가 보이면 OLED 정상입니다.
+Scanning... (0x01 - 0x7E)
+  Found: 0x3C
+  Found 1 device(s). If you see 0x3C or 0x3D, the OLED is OK.
 ```
 
 **아무것도 안 나오면:**
@@ -107,7 +127,7 @@ SCL 핀: P0.27
 ## 4. 2단계 — 티커 펌웨어 올리기
 
 1. `firmware/nu40_ticker/nu40_ticker.ino` 를 열고 업로드합니다.
-2. 화면에 `SLOT 1 / WAITING / PC data...` 가 뜨면 성공입니다.
+2. 화면에 `WAITING` / `SLOT 1` 이 뜨면 성공입니다.
    아직 PC에서 값을 안 보냈다는 뜻입니다.
 
 > **한글은 어떻게 나오나**
@@ -201,14 +221,14 @@ SLOT3=NVDA,엔비디아,170
 
 ```
 ============================================================
- NU40 DK 실시간 주식 티커 — 토스증권 오픈 API 연결
+ NU40 DK Live Stock Ticker — Toss Securities Open API
 ============================================================
-[13:20:01] 설정 파일을 읽었습니다: /Users/.../host/.env
-[13:20:01] 슬롯 설정: 0=005930(삼성전자) 임계가 69,000.00, ...
-[13:20:01] 보드에 연결했습니다: /dev/cu.usbmodem1101 (속도 115200)
-[13:20:01] 보드 준비 완료 — 슬롯 4개를 즉시 보냅니다.
-[13:20:02] 토큰을 발급받았습니다. (약 3600초 동안 유효)
-[13:20:05] 005930 68,900 -2.96%  |  000660 170,500 +0.29%  |  ...
+[13:20:01] Loaded settings: /Users/.../host/.env
+[13:20:01] Slots: 0=005930(삼성전자) alert below 69,000.00, ...
+[13:20:01] Connected to the board: /dev/cu.usbmodem1101 (115200 baud)
+[13:20:01] Board ready — sending all 4 slots now.
+[13:20:02] Got an access token (valid for about 3600 s).
+[13:20:05] 삼성전자 68,900 -2.96%  |  SK하이닉스 170,500 +0.29%  |  ...
 ```
 
 멈추려면 `Ctrl+C` 입니다.
@@ -329,7 +349,7 @@ D|0|삼성전자|268,500|-2.19%|0|18,19,17,20,22,...,15,12,9
 ```
 
 - 차트는 64개 점을 x = 0, 2, 4, ..., 126에 놓고 `drawLine()`으로 잇습니다. 점을 다 찍지 않습니다.
-- 값이 없는 슬롯은 `대기중` 표시.
+- 값이 없는 슬롯은 `WAITING` 표시.
 - **화면은 값이 실제로 바뀌었을 때만 다시 그립니다.** 매 루프마다 그리면 눈에 보이게 깜빡입니다.
 
 ### 한글 글꼴
@@ -376,7 +396,7 @@ python3 tools/make_hangul_font.py --full    # 현대 한글 11172자 전부
 | 3 | VCC가 **3V3**인지 확인합니다. 5V에 꽂으면 안 됩니다 |
 | 4 | 점퍼선을 다른 것으로 교체합니다 |
 
-시리얼 모니터에 `ERR|OLED 없음` 이 반복되면 보드는 살아 있고 화면만 못 찾은 상태입니다.
+시리얼 모니터에 `ERR|No OLED` 가 반복되면 보드는 살아 있고 화면만 못 찾은 상태입니다.
 
 ### 포트를 못 찾습니다 / 포트를 열 수 없습니다
 
@@ -401,10 +421,10 @@ python3 tools/make_hangul_font.py --full    # 현대 한글 11172자 전부
 
 | 메시지 | 원인과 해결 |
 |---|---|
-| `토큰 발급 거부 — client_id/client_secret 이 맞는지...` | `.env`의 키를 다시 확인하세요. 앞뒤 공백이나 따옴표가 들어가지 않았는지 보세요 |
-| `토큰 발급 차단(403)` / `접근이 거부됐습니다(403)` | 토스증권 → 설정 → Open API → **허용 IP 관리**에 현재 IP를 등록하세요 |
-| `토큰이 만료되어 다시 발급받습니다` | **정상 동작입니다.** 프로그램이 알아서 재발급합니다. 아무것도 안 해도 됩니다 |
-| `호출 횟수 제한에 걸렸습니다` | `POLL_SECONDS`를 늘리세요(5 → 10). 잠시 뒤 자동으로 재시도합니다 |
+| `Token refused — check client_id/client_secret.` | `.env`의 키를 다시 확인하세요. 앞뒤 공백이나 따옴표가 들어가지 않았는지 보세요 |
+| `Token blocked (403)` / `Access denied (403)` | 토스증권 → 설정 → Open API → **허용 IP 관리**에 현재 IP를 등록하세요 |
+| `Token expired, getting a new one.` | **정상 동작입니다.** 프로그램이 알아서 재발급합니다. 아무것도 안 해도 됩니다 |
+| `Rate limited. Retrying in ...` | `POLL_SECONDS`를 늘리세요(5 → 10). 잠시 뒤 자동으로 재시도합니다 |
 
 ### 인터넷이 끊겼습니다
 
@@ -480,9 +500,9 @@ Sketch-Armed: No
 
 정상이면 이렇게 **두 개**가 나옵니다:
 ```
-  찾음: 0x3C      ← OLED
-  찾음: 0x6A      ← 보드 내장 센서
-  총 2개 찾았습니다.
+  Found: 0x3C      ← OLED
+  Found: 0x6A      ← 보드 내장 센서
+  Found 2 device(s). ...
 ```
 
 ### `i2c_scan` 이 아무것도 출력하지 않고 멈춥니다

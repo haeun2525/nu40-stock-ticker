@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-bridge.py — 토스증권 오픈 API에서 주가를 가져와 NU40 DK 보드로 보내는 프로그램
+bridge.py — fetches stock prices from the Toss Securities Open API and sends them to the NU40 DK board
 
-역할 분담(중요):
-  - 이 프로그램(PC)이  : 인터넷 호출, JSON 해석, 등락률 계산, 차트 값 만들기, 글자 꾸미기
-  - 보드(NU40 DK)가    : 받은 글자를 화면에 그리기, 버튼으로 종목 바꾸기, LED 켜기
-  NU40에는 WiFi가 없어서 보드가 직접 인터넷을 쓸 수 없다. 그래서 이렇게 나눈다.
+Division of roles (important):
+  - This program (PC) : internet calls, JSON parsing, % change math, chart values, text formatting
+  - The board (NU40 DK): draws the text it receives, switches stocks with the buttons, drives the LEDs
+  The NU40 has no Wi-Fi, so the board can't reach the internet itself. That's why the work is split.
 
-쓰는 법:
-    1) host/config.example.env 를 복사해서 host/.env 로 만들고 값을 채운다
+Usage:
+    1) Copy host/config.example.env to host/.env and fill in the values
     2) python3 host/bridge.py
-    멈추려면 Ctrl+C.
+    Press Ctrl+C to stop.
 
-※ 이 프로그램은 시세 조회 API만 부른다. 주문(매매) 기능은 만들지 않았다.
+Note: this program only calls the price lookup APIs. There is no order (trading) code.
 """
 
 import os
@@ -24,52 +24,52 @@ from datetime import datetime
 from pathlib import Path
 
 # ─────────────────────────────────────────────────────────────
-# 필요한 라이브러리 확인 (없으면 한국어로 안내하고 끝낸다)
+# Check required libraries (print a hint and exit if one is missing)
 # ─────────────────────────────────────────────────────────────
 try:
-    import requests                     # 인터넷 호출용
+    import requests                     # internet calls
 except ImportError:
-    print("[오류] requests 라이브러리가 없습니다.  pip3 install -r host/requirements.txt")
+    print("[Error] The requests library is missing.  pip3 install -r host/requirements.txt")
     sys.exit(1)
 
 try:
-    import serial                       # USB 시리얼 통신용 (pyserial)
+    import serial                       # USB serial (pyserial)
     from serial.tools import list_ports
 except ImportError:
-    print("[오류] pyserial 라이브러리가 없습니다.  pip3 install -r host/requirements.txt")
+    print("[Error] The pyserial library is missing.  pip3 install -r host/requirements.txt")
     sys.exit(1)
 
 try:
-    from dotenv import load_dotenv      # .env 파일 읽기용
+    from dotenv import load_dotenv      # reads the .env file
 except ImportError:
-    print("[오류] python-dotenv 라이브러리가 없습니다.  pip3 install -r host/requirements.txt")
+    print("[Error] The python-dotenv library is missing.  pip3 install -r host/requirements.txt")
     sys.exit(1)
 
 
 # ─────────────────────────────────────────────────────────────
-# 고정값
+# Constants
 # ─────────────────────────────────────────────────────────────
-API_BASE = "https://openapi.tossinvest.com"   # 토스증권 오픈 API 주소
+API_BASE = "https://openapi.tossinvest.com"   # Toss Securities Open API
 
-BAUD = 115200          # 시리얼 속도. 펌웨어와 반드시 같아야 한다.
-SLOT_COUNT = 4         # 슬롯(=버튼) 개수
-CHART_POINTS = 64      # 차트 점 개수 (통신 규약상 고정)
-CHART_MAX = 36         # 차트 값의 최대치 (통신 규약상 0~36 정수)
+BAUD = 115200          # serial speed. Must match the firmware.
+SLOT_COUNT = 4         # number of slots (= buttons)
+CHART_POINTS = 64      # number of chart points (fixed by the protocol)
+CHART_MAX = 36         # max chart value (protocol: integers 0-36)
 
-CANDLE_REFRESH_SEC = 60      # 차트용 1분봉을 다시 받아오는 주기. 1분봉은 1분에 한 번만 바뀐다.
-CANDLE_PAGE_SIZE = 200       # 캔들 API가 한 번에 주는 최대 개수
-CANDLE_MAX_PAGES = 7         # 국내 장은 390분(2페이지)이면 되지만, 미국은 프리·애프터마켓까지
-                             # 이어져 하루가 900분을 넘는다. 장 경계를 확실히 만나도록 넉넉히 잡는다.
-SESSION_CACHE_SEC = 1800     # 장 운영 시간을 다시 물어보는 주기 (30분)
-BASE_REFRESH_SEC = 600       # 등락률 기준(전일 종가)을 다시 받아오는 주기. 하루에 한 번 바뀌지만 넉넉히 10분.
-HTTP_TIMEOUT = 10            # 인터넷 호출을 몇 초까지 기다릴지
+CANDLE_REFRESH_SEC = 60      # how often to re-fetch the 1-minute candles for the chart. They only change once a minute.
+CANDLE_PAGE_SIZE = 200       # max candles the API returns per request
+CANDLE_MAX_PAGES = 7         # A Korean session is 390 min (2 pages), but US data runs through pre/after-market
+                             # and a day passes 900 min. Allow enough pages to reach the session start.
+SESSION_CACHE_SEC = 1800     # how often to re-ask for market hours (30 min)
+BASE_REFRESH_SEC = 600       # how often to re-fetch the % change base (previous close). Changes daily; 10 min is plenty.
+HTTP_TIMEOUT = 10            # seconds to wait for an internet call
 
-HANGUL = re.compile(r"[가-힣]")   # 한글이 섞였는지 검사용 (글자 폭 계산에 쓴다)
+HANGUL = re.compile(r"[가-힣]")   # detects Korean characters (used for text width)
 
 
 def parse_timestamp(text):
-    """캔들의 시각 문자열(예: 2026-03-25T09:00:00+09:00)을 초 단위 숫자로 바꾼다.
-    캔들 사이의 시간 간격을 재서 '오늘 장'만 골라내는 데 쓴다. 실패하면 None."""
+    """Turn a candle time string (e.g. 2026-03-25T09:00:00+09:00) into seconds.
+    Used to pick out today's session from the candles. Returns None on failure."""
     if not text:
         return None
     for candidate in (text, re.sub(r"\.\d+", "", text)):
@@ -81,35 +81,35 @@ def parse_timestamp(text):
 
 
 def log(msg):
-    """시각과 함께 한 줄 찍는다."""
+    """Print one line with a timestamp."""
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 # ─────────────────────────────────────────────────────────────
-# 설정 읽기
+# Settings
 # ─────────────────────────────────────────────────────────────
 class SlotConfig:
-    """슬롯 하나의 설정.  SLOTn = 종목코드,표시이름,임계가"""
+    """Settings for one slot.  SLOTn = symbol,display name,alert level"""
 
     def __init__(self, index, symbol, display_name, threshold):
         self.index = index
-        self.symbol = symbol                # API에 보낼 종목코드 (예: 005930, TSLA)
-        self.display_name = display_name    # 사람이 읽는 이름 (예: 삼성전자)
-        self.threshold = threshold          # 이 값 아래로 내려가면 LED를 켠다
+        self.symbol = symbol                # symbol sent to the API (e.g. 005930, TSLA)
+        self.display_name = display_name    # human-readable name (e.g. Apple, 삼성전자)
+        self.threshold = threshold          # the LED turns on below this price
 
     @property
     def market(self):
-        """이 종목이 어느 시장인지. 6자리 숫자면 국내(KRX), 아니면 미국."""
+        """Which market this stock is in. A 6-digit code is Korea (KRX), anything else is US."""
         return "KR" if self.symbol.isdigit() and len(self.symbol) == 6 else "US"
 
     @property
     def screen_name(self):
-        """OLED에 띄울 이름. 한글도 그대로 쓴다.
-        (펌웨어에 한글 글꼴 2350자를 넣어뒀다 — tools/make_hangul_font.py)
+        """The name shown on the OLED. Korean names are drawn as is
+        (the firmware includes a 2,350-character Hangul font — tools/make_hangul_font.py).
 
-        다만 같은 줄 오른쪽에 등락률이 들어가야 해서 가로 폭에 한계가 있다.
-        화면이 128픽셀인데 등락률이 약 48픽셀을 쓰므로, 이름은 80픽셀까지만 쓴다.
-        한글 한 글자는 10픽셀, 영문·숫자는 6픽셀이다."""
+        The % change sits on the right of the same row, so width is limited.
+        The screen is 128 px and the % change takes about 48 px, so the name gets 80 px.
+        A Korean character is 10 px; a Latin letter or digit is 6 px."""
         limit = 80
         out, width = "", 0
         for ch in self.display_name:
@@ -122,21 +122,21 @@ class SlotConfig:
 
 
 def load_config():
-    """.env 를 읽어서 설정을 만든다. 문제가 있으면 한국어로 알려주고 None을 돌려준다."""
+    """Read .env and build the settings. On a problem, explain it and return None."""
     here = Path(__file__).resolve().parent
     for candidate in (here / ".env", here.parent / ".env"):
         if candidate.exists():
             load_dotenv(candidate)
-            log(f"설정 파일을 읽었습니다: {candidate}")
+            log(f"Loaded settings: {candidate}")
             break
     else:
-        log("설정 파일(.env)을 찾지 못했습니다. host/config.example.env 를 복사해 host/.env 로 만드세요.")
+        log("Settings file (.env) not found. Copy host/config.example.env to host/.env.")
         return None
 
     client_id = (os.getenv("TOSS_CLIENT_ID") or "").strip()
     client_secret = (os.getenv("TOSS_CLIENT_SECRET") or "").strip()
     if not client_id or not client_secret:
-        log("TOSS_CLIENT_ID 또는 TOSS_CLIENT_SECRET 이 비어 있습니다. .env를 확인하세요.")
+        log("TOSS_CLIENT_ID or TOSS_CLIENT_SECRET is empty. Check .env.")
         return None
 
     port = (os.getenv("SERIAL_PORT") or "").strip()
@@ -144,36 +144,36 @@ def load_config():
     try:
         poll_seconds = float(os.getenv("POLL_SECONDS") or 5)
     except ValueError:
-        log("POLL_SECONDS 값이 숫자가 아닙니다. 기본값 5초를 씁니다.")
+        log("POLL_SECONDS is not a number. Using the default, 5 seconds.")
         poll_seconds = 5.0
     if poll_seconds < 1:
-        log("POLL_SECONDS가 너무 짧습니다. 최소 1초로 올립니다. (API 호출 제한 때문)")
+        log("POLL_SECONDS is too short. Raising it to 1 second (API rate limits).")
         poll_seconds = 1.0
 
     chart_range = (os.getenv("CHART_RANGE") or "day").strip().lower()
     if chart_range not in ("day", "hour"):
-        log(f"CHART_RANGE 값 '{chart_range}' 을 알 수 없습니다. 기본값 day(오늘 하루)를 씁니다.")
+        log(f"Unknown CHART_RANGE '{chart_range}'. Using the default, day (today's session).")
         chart_range = "day"
 
     slots = []
     for i in range(SLOT_COUNT):
         raw = (os.getenv(f"SLOT{i}") or "").strip()
         if not raw:
-            log(f"SLOT{i} 이 비어 있습니다. .env에 '종목코드,표시이름,임계가' 형식으로 채우세요.")
+            log(f"SLOT{i} is empty. Fill it in .env as 'symbol,display name,alert level'.")
             return None
         parts = [p.strip() for p in raw.split(",")]
         if len(parts) != 3:
-            log(f"SLOT{i} 형식이 잘못됐습니다: '{raw}' → '종목코드,표시이름,임계가' 3칸이어야 합니다.")
+            log(f"SLOT{i} is malformed: '{raw}' → it needs 3 fields: 'symbol,display name,alert level'.")
             return None
         try:
             threshold = float(parts[2].replace(",", ""))
         except ValueError:
-            log(f"SLOT{i} 의 임계가 '{parts[2]}' 가 숫자가 아닙니다.")
+            log(f"SLOT{i} alert level '{parts[2]}' is not a number.")
             return None
         slots.append(SlotConfig(i, parts[0], parts[1], threshold))
 
-    # 여기서 client_secret 은 절대 화면에 찍지 않는다.
-    log(f"슬롯 설정: " + ", ".join(f"{s.index}={s.symbol}({s.display_name}) 임계가 {s.threshold:,.2f}" for s in slots))
+    # Never print client_secret here.
+    log(f"Slots: " + ", ".join(f"{s.index}={s.symbol}({s.display_name}) alert below {s.threshold:,.2f}" for s in slots))
     return {
         "client_id": client_id,
         "client_secret": client_secret,
@@ -185,33 +185,33 @@ def load_config():
 
 
 # ─────────────────────────────────────────────────────────────
-# 토스증권 API 담당
+# Toss Securities API
 # ─────────────────────────────────────────────────────────────
 class TossApiError(Exception):
-    """API 호출이 실패했을 때 쓰는 오류. 메시지는 항상 한국어 한 줄."""
+    """Raised when an API call fails. The message is always one readable line."""
 
 
 class TossClient:
-    """토스증권 오픈 API 중 '조회' 기능만 사용하는 담당자.
+    """Uses only the lookup ('read') part of the Toss Securities Open API.
 
-    주문(매매) 관련 함수는 일부러 만들지 않았다.
-    쓰는 엔드포인트는 아래 3개뿐이다.
-      POST /oauth2/token       토큰 발급
-      GET  /api/v1/prices      현재가 조회 (여러 종목을 한 번에)
-      GET  /api/v1/candles     캔들(차트용) 조회
+    There are deliberately no order (trading) functions.
+    Only these endpoints are used:
+      POST /oauth2/token       issue a token
+      GET  /api/v1/prices      current prices (several symbols at once)
+      GET  /api/v1/candles     candles (for the chart)
     """
 
     def __init__(self, client_id, client_secret):
         self._client_id = client_id
         self._client_secret = client_secret
         self._token = None
-        self._token_expires_at = 0.0     # 이 시각이 지나면 토큰을 다시 받는다
+        self._token_expires_at = 0.0     # get a new token after this time
         self._session = requests.Session()
-        self._session_cache = {}     # 시장별 장 운영 시간 캐시 (매번 물어볼 필요 없다)
+        self._session_cache = {}     # market hours per market (no need to ask every time)
 
-    # ── 토큰 ───────────────────────────────────────────────
+    # ── Token ──────────────────────────────────────────────
     def _issue_token(self):
-        """액세스 토큰을 새로 발급받는다. (OAuth 2.0 Client Credentials 방식)"""
+        """Get a new access token (OAuth 2.0 Client Credentials)."""
         try:
             resp = self._session.post(
                 f"{API_BASE}/oauth2/token",
@@ -224,34 +224,34 @@ class TossClient:
                 timeout=HTTP_TIMEOUT,
             )
         except requests.exceptions.RequestException:
-            raise TossApiError("토큰 발급 중 인터넷 연결에 실패했습니다.")
+            raise TossApiError("Internet connection failed while getting a token.")
 
         if resp.status_code != 200:
-            # 여기서도 client_secret 은 절대 찍지 않는다.
+            # Never print client_secret here either.
             if resp.status_code in (400, 401):
-                raise TossApiError("토큰 발급 거부 — client_id/client_secret 이 맞는지 확인하세요.")
+                raise TossApiError("Token refused — check client_id/client_secret.")
             if resp.status_code == 403:
-                raise TossApiError("토큰 발급 차단(403) — 토스증권 설정의 '허용 IP 관리'에 현재 IP를 등록했는지 확인하세요.")
-            raise TossApiError(f"토큰 발급 실패 (응답 코드 {resp.status_code}).")
+                raise TossApiError("Token blocked (403) — add your current IP to the allowed IPs in Toss Securities Open API settings.")
+            raise TossApiError(f"Token request failed (status {resp.status_code}).")
 
         try:
             body = resp.json()
             self._token = body["access_token"]
             expires_in = int(body.get("expires_in", 3600))
         except (ValueError, KeyError, TypeError):
-            raise TossApiError("토큰 발급 응답을 이해하지 못했습니다.")
+            raise TossApiError("Couldn't understand the token response.")
 
-        # 만료 1분 전에 미리 갱신한다(딱 맞춰 쓰다가 실패하지 않게).
+        # Renew 1 minute before expiry (so we never use it right up to the edge).
         self._token_expires_at = time.time() + max(expires_in - 60, 30)
-        log(f"토큰을 발급받았습니다. (약 {expires_in}초 동안 유효)")
+        log(f"Got an access token (valid for about {expires_in} s).")
 
     def _ensure_token(self):
         if self._token is None or time.time() >= self._token_expires_at:
             self._issue_token()
 
-    # ── 공통 호출 ──────────────────────────────────────────
+    # ── Shared request ─────────────────────────────────────
     def _get(self, path, params):
-        """조회 요청 하나를 보낸다. 401이면 토큰을 다시 받아 한 번만 재시도한다."""
+        """Send one lookup request. On 401, get a new token and retry once."""
         for attempt in (1, 2):
             self._ensure_token()
             try:
@@ -262,48 +262,48 @@ class TossClient:
                     timeout=HTTP_TIMEOUT,
                 )
             except requests.exceptions.Timeout:
-                raise TossApiError(f"응답이 {HTTP_TIMEOUT}초 안에 오지 않았습니다.")
+                raise TossApiError(f"No response within {HTTP_TIMEOUT} s.")
             except requests.exceptions.RequestException:
-                raise TossApiError("인터넷 연결에 실패했습니다.")
+                raise TossApiError("Internet connection failed.")
 
             if resp.status_code == 200:
                 try:
                     return resp.json().get("result")
                 except ValueError:
-                    raise TossApiError("응답이 올바른 형식이 아닙니다.")
+                    raise TossApiError("The response was not in the expected format.")
 
             if resp.status_code == 401 and attempt == 1:
-                # 토큰이 만료됐다는 뜻. 새로 받고 한 번 더 시도한다.
-                log("토큰이 만료되어 다시 발급받습니다.")
+                # The token expired. Get a new one and try once more.
+                log("Token expired, getting a new one.")
                 self._token = None
                 continue
 
             if resp.status_code == 429:
-                # 너무 자주 불렀다는 뜻. 서버가 알려준 만큼 기다리라고 위로 알린다.
+                # Called too often. Pass the server's wait time up.
                 wait = 1.0
                 try:
                     wait = float(resp.headers.get("Retry-After", 1))
                 except (TypeError, ValueError):
                     pass
-                raise TossApiError(f"호출 횟수 제한에 걸렸습니다. {wait:.0f}초 뒤 다시 시도합니다.")
+                raise TossApiError(f"Rate limited. Retrying in {wait:.0f} s.")
 
             if resp.status_code == 403:
-                raise TossApiError("접근이 거부됐습니다(403) — 토스증권 설정의 '허용 IP 관리'를 확인하세요.")
+                raise TossApiError("Access denied (403) — check the allowed IPs in Toss Securities Open API settings.")
 
-            # 그 밖의 오류는 서버가 준 코드만 짧게 옮긴다.
+            # For any other error, pass on just the server's code.
             code = ""
             try:
                 code = resp.json().get("error", {}).get("code", "")
             except (ValueError, AttributeError):
                 pass
-            raise TossApiError(f"조회 실패 (응답 코드 {resp.status_code}{', ' + code if code else ''}).")
+            raise TossApiError(f"Lookup failed (status {resp.status_code}{', ' + code if code else ''}).")
 
-        raise TossApiError("조회에 반복 실패했습니다.")
+        raise TossApiError("Lookup failed repeatedly.")
 
-    # ── 실제로 쓰는 조회 3종 ───────────────────────────────
+    # ── The 3 lookups main() uses ─────────────────────────
     def get_prices(self, symbols):
-        """현재가 조회. 종목 여러 개를 한 번에 물어본다.
-        돌려주는 값: { '005930': {'price': 68900.0, 'currency': 'KRW'}, ... }"""
+        """Current prices, several symbols in one request.
+        Returns: { '005930': {'price': 68900.0, 'currency': 'KRW'}, ... }"""
         result = self._get("/api/v1/prices", {"symbols": ",".join(symbols)}) or []
         out = {}
         for item in result:
@@ -313,11 +313,11 @@ class TossClient:
                     "currency": item.get("currency") or "KRW",
                 }
             except (KeyError, TypeError, ValueError):
-                continue   # 값이 이상한 종목 하나 때문에 전체가 멈추지 않게 넘어간다
+                continue   # skip one bad item so the rest still work
         return out
 
     def _fetch_candles(self, symbol, interval, count, before=None):
-        """캔들 한 페이지를 받아 (시각초, 종가) 목록과 다음 페이지 표시를 돌려준다."""
+        """Fetch one page of candles. Returns a list of (time_sec, close) and the next-page marker."""
         params = {"symbol": symbol, "interval": interval, "count": count}
         if before:
             params["before"] = before
@@ -332,23 +332,23 @@ class TossClient:
         return rows, result.get("nextBefore")
 
     def get_candle_closes(self, symbol, interval, count):
-        """캔들의 종가만 뽑아서 '오래된 것 → 최신' 순서로 돌려준다. (전일 종가 조회용)"""
+        """Closing prices only, oldest first. (Used for the previous close.)"""
         rows, _ = self._fetch_candles(symbol, interval, count)
         rows = [r for r in rows if r[0] is not None]
         rows.sort(key=lambda r: r[0])
         return [price for _, price in rows]
 
     def get_session_window(self, market):
-        """지금 화면에 그려야 할 '하루'가 언제부터 언제까지인지 알아낸다.
+        """Work out the start and end of the trading 'day' to draw.
 
-        왜 필요한가:
-          간격으로 자르는 방법은 국내 종목엔 통하지만 미국 종목엔 통하지 않는다.
-          토스 API가 미국 종목은 24시간 내내 1분봉을 주기 때문에 장과 장 사이의
-          '빈 구간'이 없다. 그래서 장 운영 시간 API에 직접 물어본다.
+        Why this is needed:
+          Splitting candles by time gaps works for Korean stocks but not US ones.
+          Toss returns 1-minute candles for US stocks around the clock, so there is
+          no gap between sessions. So we ask the market-hours API directly.
 
-        돌려주는 값: (시작초, 끝초, 끝시각문자열)
-          - 오늘 장이 이미 열렸으면 오늘 정규장
-          - 아직 안 열렸으면 가장 최근에 끝난 정규장 (예: 낮에 보는 미국 주식)
+        Returns: (start_sec, end_sec, end_time_string)
+          - today's regular session if it has already opened
+          - otherwise the most recent finished regular session (e.g. US stocks viewed in the Korean daytime)
         """
         cached = self._session_cache.get(market)
         if cached and time.time() - cached[0] < SESSION_CACHE_SEC:
@@ -357,8 +357,8 @@ class TossClient:
         result = self._get(f"/api/v1/market-calendar/{market}", {}) or {}
 
         def pick(day):
-            """하루치 정보에서 정규장 시간만 뽑는다.
-            국내는 integrated 아래에, 미국은 바로 아래에 들어 있다."""
+            """Pull the regular-session hours out of one day's info.
+            Korea has them under 'integrated'; the US has them directly."""
             if not isinstance(day, dict):
                 return None
             node = day.get("integrated") or day
@@ -374,27 +374,27 @@ class TossClient:
 
         now = time.time()
         if today and now >= today[0]:
-            window = today          # 오늘 장이 열렸다
+            window = today          # today's session has opened
         else:
-            window = previous or today   # 아직 안 열렸으면 직전 장
+            window = previous or today   # not open yet: use the previous session
 
         if window:
             self._session_cache[market] = (now, window)
         return window
 
     def get_today_closes(self, symbol, market):
-        """오늘(또는 가장 최근) 정규장 구간의 1분봉 종가를 모아 돌려준다.
+        """1-minute closes for today's (or the most recent) regular session.
 
-        장 끝 시각부터 거꾸로 페이지를 넘기며 받기 때문에 요청 수가 적다.
-        (before 파라미터에 장 마감 시각을 주면 그 이전 봉부터 받는다)
+        Pages backward from the session end, so it needs few requests.
+        (Passing the close time as 'before' returns candles before that time.)
         """
         window = self.get_session_window(market)
         if not window:
-            raise TossApiError(f"{market} 장 운영 시간을 확인하지 못했습니다.")
+            raise TossApiError(f"Couldn't get {market} market hours.")
         start, end, end_iso = window
 
         rows = []
-        before = end_iso            # 장 마감 시각부터 거꾸로 훑는다
+        before = end_iso            # walk backward from the session close
         for _ in range(CANDLE_MAX_PAGES):
             page, before = self._fetch_candles(symbol, "1m", CANDLE_PAGE_SIZE, before)
             page = [r for r in page if r[0] is not None]
@@ -402,7 +402,7 @@ class TossClient:
                 break
             rows.extend(page)
             if min(r[0] for r in page) <= start:
-                break               # 장 시작 시각까지 다 받았다
+                break               # reached the session start
             if not before:
                 break
 
@@ -412,23 +412,23 @@ class TossClient:
 
 
 # ─────────────────────────────────────────────────────────────
-# 화면에 보낼 글자 만들기
+# Build the text for the screen
 # ─────────────────────────────────────────────────────────────
 def format_price(value, currency):
-    """가격 숫자를 화면용 글자로 바꾼다.
-    원화는 소수점 없이 콤마(68,900), 달러는 소수점 둘째 자리까지(398.20)."""
+    """Turn a price into display text.
+    Won: no decimals, with commas (68,900). Dollars: 2 decimals (398.20)."""
     if currency == "KRW":
         return f"{value:,.0f}"
     return f"{value:,.2f}"
 
 
 def downsample(values, points=CHART_POINTS):
-    """값이 몇 개든 정확히 points 개로 줄인다.
+    """Reduce any number of values to exactly `points` values.
 
-    하루치 1분봉은 약 390개인데 화면에 그릴 수 있는 점은 64개뿐이다.
-    390개를 64칸으로 나눠 담고, 각 칸의 '마지막 값'을 대표로 쓴다.
-    마지막 값을 쓰는 이유: 맨 오른쪽 칸의 대표가 곧 지금 가격이 되어
-    화면의 오른쪽 끝이 실시간 가격을 그대로 따라가기 때문이다.
+    A day of 1-minute candles is about 390 values, but the screen fits only 64 points.
+    Split the 390 into 64 buckets and keep each bucket's last value.
+    Why the last value: the rightmost bucket then ends with the current price,
+    so the right edge of the chart follows the live price.
     """
     if not values:
         return []
@@ -441,31 +441,31 @@ def downsample(values, points=CHART_POINTS):
         end = int((i + 1) * len(values) / points)
         if end <= start:
             end = start + 1
-        out.append(values[end - 1])       # 각 칸의 마지막 값
+        out.append(values[end - 1])       # last value of each bucket
     return out
 
 
 def normalize_chart(prices):
-    """가격 목록을 0~36 정수 64개로 바꾼다.
-    가장 싼 값이 0, 가장 비싼 값이 36이 되도록 비율을 맞추는 작업이다."""
+    """Turn a price list into 64 integers 0-36,
+    scaled so the lowest price is 0 and the highest is 36."""
     if not prices:
         return [CHART_MAX // 2] * CHART_POINTS
 
     values = list(prices)
     if len(values) < CHART_POINTS:
-        # 개수가 모자라면 앞쪽을 첫 값으로 채워서 항상 64개를 만든다.
+        # If there are too few, pad the front with the first value so there are always 64.
         values = [values[0]] * (CHART_POINTS - len(values)) + values
     values = values[-CHART_POINTS:]
 
     low, high = min(values), max(values)
     if high - low < 1e-9:
-        return [CHART_MAX // 2] * CHART_POINTS   # 값이 전부 같으면 평평한 선
+        return [CHART_MAX // 2] * CHART_POINTS   # all the same: flat line
 
     return [int(round((v - low) / (high - low) * CHART_MAX)) for v in values]
 
 
 def build_line(slot_index, name, price_text, chg_text, alert, chart):
-    """통신 규약대로 한 줄을 만든다.
+    """Build one line in protocol format.
     D|<slot>|<name>|<price>|<chg>|<alert>|<v0>,...,<v63>"""
     return "D|{}|{}|{}|{}|{}|{}".format(
         slot_index, name, price_text, chg_text,
@@ -475,29 +475,29 @@ def build_line(slot_index, name, price_text, chg_text, alert, chart):
 
 
 # ─────────────────────────────────────────────────────────────
-# 보드와의 연결
+# Board connection
 # ─────────────────────────────────────────────────────────────
 def find_port():
-    """연결된 NU40 DK 보드의 시리얼 포트를 찾는다. 못 찾으면 None."""
+    """Find the serial port of the connected NU40 DK. None if not found."""
     candidates = []
     for p in list_ports.comports():
-        if p.vid in (0x239A, 0x2FE3):        # 이 보드가 쓰는 제조사 ID
+        if p.vid in (0x239A, 0x2FE3):        # vendor IDs this board uses
             candidates.append(p.device)
         elif "usbmodem" in p.device or "USB" in (p.description or ""):
             candidates.append(p.device)
     for c in candidates:
-        if c.startswith("/dev/cu."):          # 맥에서는 /dev/cu.* 가 안정적이다
+        if c.startswith("/dev/cu."):          # on a Mac, /dev/cu.* is more reliable
             return c
     return candidates[0] if candidates else None
 
 
 class BoardLink:
-    """보드와 글자를 주고받는 담당."""
+    """Sends and receives text with the board."""
 
     def __init__(self, port):
         self.port = port
         self.ser = None
-        self.ready_event = threading.Event()   # 보드가 READY를 보내면 켜지는 깃발
+        self.ready_event = threading.Event()   # set when the board sends READY
         self._stop = False
         self._reader = None
 
@@ -506,20 +506,20 @@ class BoardLink:
             self.ser = serial.Serial(self.port, BAUD, timeout=1)
         except Exception:
             raise TossApiError(
-                f"시리얼 포트를 열지 못했습니다: {self.port}\n"
-                "       아두이노 IDE의 시리얼 모니터가 켜져 있으면 닫고 다시 시도하세요.\n"
-                "       (포트는 한 번에 한 프로그램만 쓸 수 있습니다.)"
+                f"Could not open serial port: {self.port}\n"
+                "       If Arduino IDE's Serial Monitor is open, close it and try again.\n"
+                "       (Only one program can use the port at a time.)"
             )
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
 
     def _read_loop(self):
-        """보드가 보내는 READY / SEL| / ERR| 를 계속 읽는다."""
+        """Keep reading READY / SEL| / ERR| from the board."""
         while not self._stop:
             try:
                 raw = self.ser.readline()
             except Exception:
-                return   # 케이블이 빠지거나 포트가 닫힌 경우
+                return   # cable unplugged or port closed
             if not raw:
                 continue
             line = raw.decode("utf-8", errors="replace").strip()
@@ -527,23 +527,23 @@ class BoardLink:
                 continue
 
             if line == "READY":
-                log("보드 준비 완료 — 슬롯 4개를 즉시 보냅니다.")
+                log("Board ready — sending all 4 slots now.")
                 self.ready_event.set()
             elif line.startswith("SEL|"):
-                log(f"보드에서 버튼으로 슬롯 {line[4:]}번을 선택했습니다.")
+                log(f"Board button selected slot {line[4:]}.")
             elif line.startswith("ERR|"):
-                log(f"보드 오류: {line[4:]}")
+                log(f"Board error: {line[4:]}")
             else:
-                log(f"보드: {line}")
+                log(f"Board: {line}")
 
     def send(self, line):
         try:
-            # 한글이 들어갈 수 있으므로 UTF-8로 보낸다. 펌웨어가 UTF-8을 해석한다.
+            # Names may be Korean, so send UTF-8. The firmware decodes UTF-8.
             self.ser.write((line + "\n").encode("utf-8"))
             self.ser.flush()
             return True
         except Exception:
-            log("보드로 보내지 못했습니다. USB 케이블이 빠지지 않았는지 확인하세요.")
+            log("Couldn't send to the board. Check that the USB cable is still connected.")
             return False
 
     def close(self):
@@ -556,11 +556,11 @@ class BoardLink:
 
 
 # ─────────────────────────────────────────────────────────────
-# 본체
+# Main
 # ─────────────────────────────────────────────────────────────
 def main():
     print("=" * 60)
-    print(" NU40 DK 실시간 주식 티커 — 토스증권 오픈 API 연결")
+    print(" NU40 DK Live Stock Ticker — Toss Securities Open API")
     print("=" * 60)
 
     config = load_config()
@@ -569,7 +569,7 @@ def main():
 
     port = config["port"] or find_port()
     if not port:
-        log("보드를 찾지 못했습니다. USB 케이블을 확인하거나 .env의 SERIAL_PORT를 채우세요.")
+        log("Board not found. Check the USB cable or set SERIAL_PORT in .env.")
         return 1
 
     slots = config["slots"]
@@ -579,82 +579,82 @@ def main():
     try:
         board.open()
     except TossApiError as e:
-        log(f"오류: {e}")
+        log(f"Error: {e}")
         return 1
-    log(f"보드에 연결했습니다: {port} (속도 {BAUD})")
+    log(f"Connected to the board: {port} ({BAUD} baud)")
 
     client = TossClient(config["client_id"], config["client_secret"])
 
-    # 슬롯별로 마지막에 성공한 값을 들고 있는다.
-    # 인터넷이 끊겨도 이 값이 남아 있어서, 보드는 마지막 정상값을 계속 보여준다.
+    # Keep the last successful values for each slot.
+    # If the internet drops, the board keeps showing these last good values.
     last_good = {}          # symbol -> (price_text, chg_text, alert, chart)
-    minute_closes = {}      # symbol -> 1분봉 종가 목록 (차트용)
-    base_close = {}         # symbol -> 전일 종가 (등락률 계산 기준)
+    minute_closes = {}      # symbol -> 1-minute closes (for the chart)
+    base_close = {}         # symbol -> previous close (base for % change)
     currency = {}           # symbol -> 'KRW' or 'USD'
 
     last_candle_at = 0.0
     last_base_at = 0.0
-    backoff = 0.0           # 오류가 나면 잠깐 쉬는 시간
+    backoff = 0.0           # pause after an error
 
-    log("보드의 READY 신호를 기다립니다... (최대 3초)")
+    log("Waiting for READY from the board... (up to 3 s)")
     if not board.ready_event.wait(timeout=3.0):
-        log("READY가 안 왔지만 그냥 진행합니다. (보드가 이미 켜져 있던 경우)")
+        log("No READY, continuing anyway. (The board was probably already running.)")
 
-    범위 = "오늘 장 전체" if config["chart_range"] == "day" else "최근 64분"
-    log(f"차트 범위: {범위}")
-    log(f"{config['poll_seconds']:.0f}초마다 시세를 가져옵니다. 멈추려면 Ctrl+C.")
+    range_label = "today's whole session" if config["chart_range"] == "day" else "last 64 minutes"
+    log(f"Chart range: {range_label}")
+    log(f"Fetching prices every {config['poll_seconds']:.0f} s. Press Ctrl+C to stop.")
     print()
 
     try:
         while True:
             now = time.time()
 
-            # 1) 등락률 기준값(전일 종가)을 가끔 갱신한다.
+            # 1) Refresh the % change base (previous close) now and then.
             if now - last_base_at > BASE_REFRESH_SEC:
                 for s in slots:
                     try:
                         closes = client.get_candle_closes(s.symbol, "1d", 2)
                         if len(closes) >= 2:
-                            base_close[s.symbol] = closes[-2]   # 마지막 바로 앞이 전일 종가
+                            base_close[s.symbol] = closes[-2]   # second to last = previous close
                         elif closes:
                             base_close[s.symbol] = closes[-1]
                     except TossApiError as e:
-                        log(f"{s.symbol} 전일 종가 조회 실패: {e}")
-                    time.sleep(0.15)   # 호출 제한에 걸리지 않게 살짝 띄운다
+                        log(f"{s.symbol} previous close lookup failed: {e}")
+                    time.sleep(0.15)   # small gap to stay under the rate limit
                 last_base_at = now
 
-            # 2) 차트용 1분봉을 가끔 갱신한다. (1분봉은 1분에 한 번만 바뀐다)
+            # 2) Refresh the chart's 1-minute candles now and then (they change once a minute).
             if now - last_candle_at > CANDLE_REFRESH_SEC:
                 for s in slots:
                     try:
                         if config["chart_range"] == "day":
-                            closes = client.get_today_closes(s.symbol, s.market)   # 오늘 정규장 전체
+                            closes = client.get_today_closes(s.symbol, s.market)   # today's whole regular session
                         else:
-                            closes = client.get_candle_closes(s.symbol, "1m", CHART_POINTS)  # 최근 64분
+                            closes = client.get_candle_closes(s.symbol, "1m", CHART_POINTS)  # last 64 minutes
                         if closes:
                             minute_closes[s.symbol] = closes
                     except TossApiError as e:
-                        log(f"{s.symbol} 차트 조회 실패: {e}")
+                        log(f"{s.symbol} chart lookup failed: {e}")
                     time.sleep(0.15)
                 last_candle_at = now
 
-            # 3) 현재가는 매번 가져온다. 4종목을 한 번의 호출로 처리한다.
+            # 3) Fetch current prices every time. One request covers all 4 stocks.
             try:
                 prices = client.get_prices(symbols)
                 backoff = 0.0
             except TossApiError as e:
-                log(f"{e}  (보드는 마지막 값을 계속 보여줍니다)")
-                # 오류가 반복되면 점점 더 오래 쉰다. 최대 60초.
+                log(f"{e}  (the board keeps showing the last values)")
+                # If errors repeat, wait longer each time. Up to 60 s.
                 backoff = min(backoff * 2 if backoff else 2.0, 60.0)
                 time.sleep(backoff)
                 continue
 
-            # 4) 슬롯마다 보드로 보낼 한 줄을 만든다.
+            # 4) Build the line to send for each slot.
             for s in slots:
                 info = prices.get(s.symbol)
 
                 if info is None:
-                    # 이번엔 값이 안 왔다. 마지막 정상값이 있으면 그걸 다시 보낸다.
+                    # No value this time. Resend the last good one if we have it.
                     if s.symbol in last_good:
                         price_text, chg_text, alert, chart = last_good[s.symbol]
                         board.send(build_line(s.index, s.screen_name, price_text, chg_text, alert, chart))
@@ -663,16 +663,16 @@ def main():
                 price = info["price"]
                 currency[s.symbol] = info["currency"]
 
-                # 등락률 = (현재가 - 전일종가) / 전일종가 × 100
+                # % change = (current - previous close) / previous close × 100
                 base = base_close.get(s.symbol)
                 if base:
                     chg_text = f"{(price - base) / base * 100:+.2f}%"
                 else:
-                    chg_text = "--%"     # 기준값을 아직 못 받은 경우
+                    chg_text = "--%"     # base not received yet
 
-                # 차트: 받아둔 1분봉 뒤에 지금 가격을 한 점 더 붙인다.
-                # 붙인 다음에 64점으로 줄이므로, 맨 오른쪽 점이 곧 지금 가격이 된다.
-                # 그래서 하루치 차트여도 오른쪽 끝은 5초마다 실시간으로 움직인다.
+                # Chart: append the current price after the stored 1-minute closes.
+                # Downsampling to 64 points happens after that, so the rightmost point is the current price.
+                # So even a full-day chart moves at its right edge every 5 seconds.
                 series = list(minute_closes.get(s.symbol) or [])
                 series.append(price)
                 chart = normalize_chart(downsample(series))
@@ -683,12 +683,12 @@ def main():
                 last_good[s.symbol] = (price_text, chg_text, alert, chart)
                 board.send(build_line(s.index, s.screen_name, price_text, chg_text, alert, chart))
 
-            # 5) 사람이 보기 좋게 한 줄 요약
+            # 5) One readable summary line
             summary = []
             for s in slots:
                 if s.symbol in last_good:
                     p, c, a, _ = last_good[s.symbol]
-                    summary.append(f"{s.screen_name} {p} {c}{' [알림]' if a else ''}")
+                    summary.append(f"{s.screen_name} {p} {c}{' [ALERT]' if a else ''}")
             if summary:
                 log("  |  ".join(summary))
 
@@ -696,13 +696,13 @@ def main():
 
     except KeyboardInterrupt:
         print()
-        log("사용자가 중지했습니다.")
+        log("Stopped by user.")
     except Exception as e:
-        # 예상 못 한 문제도 스택트레이스 대신 한국어 한 줄로 바꾼다.
-        log(f"예상하지 못한 문제가 생겨 종료합니다: {type(e).__name__}")
+        # Turn unexpected problems into one readable line instead of a stack trace.
+        log(f"Unexpected problem, exiting: {type(e).__name__}")
     finally:
         board.close()
-        log("포트를 닫았습니다.")
+        log("Port closed.")
 
     return 0
 
