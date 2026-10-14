@@ -46,14 +46,16 @@ CHART_MAX = 36         # max chart value (protocol: integers 0-36)
 
 # 4 simulated stocks. If host/.env exists, its SLOT settings are used;
 # otherwise these defaults. (So you only edit your stocks in one place.)
-# The defaults are Korean stocks with Korean names, drawn with the firmware's Hangul font.
 #   Format: (display name, start price, alert level, decimals, use commas)
 DEFAULT_SLOTS = [
-    ("삼성전자", 270000.0, 268300.0, 0, True),
-    ("SK하이닉스", 1679000.0, 1668200.0, 0, True),
-    ("네이버", 218000.0, 215300.0, 0, True),
-    ("카카오", 38250.0, 37900.0, 0, True),
+    ("Apple",     182.40, 180.0, 2, False),
+    ("Nvidia",    173.50, 170.0, 2, False),
+    ("Tesla",     410.00, 400.0, 2, False),
+    ("Microsoft", 410.00, 400.0, 2, False),
 ]
+# Korean example (the firmware's Hangul font renders these too — swap them in if you like):
+#   ("삼성전자", 270000.0, 268300.0, 0, True), ("SK하이닉스", 1679000.0, 1668200.0, 0, True),
+#   ("네이버", 218000.0, 215300.0, 0, True), ("카카오", 38250.0, 37900.0, 0, True)
 
 HANGUL = re.compile(r"[가-힣]")
 
