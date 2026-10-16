@@ -165,7 +165,7 @@ def draw_screen(name, price, chg, chart, current_slot, has_data=True):
     c = Canvas()
 
     if not has_data:
-        c.mixed_text(0, HEADER_Y, "대기중")
+        c.mixed_text(0, HEADER_Y, "WAITING")   # 펌웨어 drawScreen()과 동일
         c.text(0, PRICE_Y + 4, f"SLOT {current_slot + 1}", 1)
     else:
         c.mixed_text(0, HEADER_Y, name)                    # 종목명 (왼쪽, 한글 가능)
@@ -225,20 +225,20 @@ def make_chart(shape):
 if __name__ == "__main__":
     outdir = Path(__file__).resolve().parent
     cases = [
-        ("1_삼성전자.png",   dict(name="삼성전자", price="268,500", chg="-2.19%",
-                                chart=make_chart("down"), current_slot=0)),
-        ("2_SK하이닉스.png", dict(name="SK하이닉스", price="1,656,000", chg="-0.66%",
+        ("1_apple.png",    dict(name="Apple", price="182.40", chg="+0.85%",
+                                chart=make_chart("up"), current_slot=0)),
+        ("2_nvidia.png",   dict(name="Nvidia", price="173.50", chg="-0.66%",
                                 chart=make_chart("flat"), current_slot=1)),
-        ("3_대기중.png",     dict(name="", price="", chg="", chart=make_chart("flat"),
+        ("3_waiting.png",  dict(name="", price="", chg="", chart=make_chart("flat"),
                                 current_slot=0, has_data=False)),
-        ("4_최악조합.png",   dict(name="삼성바이오로직스", price="1,527,000", chg="-100.00%",
-                                chart=make_chart("up"), current_slot=3)),
+        ("4_long_name.png", dict(name="삼성전자", price="268,500", chg="-2.19%",
+                                chart=make_chart("down"), current_slot=3)),  # 한글 종목도 렌더됨
     ]
     made = []
     for filename, kwargs in cases:
         save_png(draw_screen(**kwargs), outdir / filename)
         made.append(outdir / filename)
-        name = kwargs.get("name") or "(대기중)"
+        name = kwargs.get("name") or "(waiting)"
         print(f"만들었습니다: {filename}   이름 폭 {measure(name)}px + 등락률 {len(kwargs['chg'])*6}px")
 
     subprocess.run(["open"] + [str(p) for p in made], check=False)
